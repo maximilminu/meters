@@ -1,0 +1,71 @@
+NAME=$(basename $PWD)
+
+GIT_TAG=$(git describe --tags)
+BUILD=$(date +%FT%T%z)
+
+if [ -e "go.mod_original" ]; then
+  echo "Please fix existing go.mod_original"
+  exit 1
+fi
+
+if [ -n "$1" -a "$1" = "getMajor" ] ; then
+    echo $GIT_TAG | cut -d '.' -f 1 -
+    exit 0
+fi
+
+echo "Compiling $NAME version $GIT_TAG build $BUILD"
+
+if [ -n "$1" -a "$1" = "production" ] ; then
+    export GOOS=linux
+    export GOARCH=amd64
+    mv go.mod go.mod_original
+    cat go.mod_original | grep -v "replace" > go.mod
+    
+    go mod tidy
+    go build -tags netgo -a -v -ldflags "-s -w -X gitlab.sistematis.com.ar/OC/be/common/microservice.Name=$NAME -X gitlab.sistematis.com.ar/OC/be/common/microservice.Version=$GIT_TAG -X gitlab.sistematis.com.ar/OC/be/common/microservice.Build=$BUILD" -o $NAME main.go
+    RET=$?
+
+    mv go.mod_original go.mod
+else
+    if [ -n "$2" -a "$2" = "prod" ] ; then
+      IFS=$'\n'; for v in $(cat ../../../prod.env); do eval "export $(echo $v | sed 's/||/\n/g')"; done
+    else
+      if [ -f "../../../local.env" ]; then
+        IFS=$'\n'; for v in $(cat ../../../local.env); do eval "export $(echo $v | sed 's/||/\n/g')"; done
+      fi
+    fi
+    if [ -f "./local.env" ]; then
+      IFS=$'\n'; for v in $(cat ./local.env); do eval "export $(echo $v | sed 's/||/\n/g')"; done
+    fi
+
+    go build -v -ldflags "-X gitlab.sistematis.com.ar/OC/be/common/microservice.Name=$NAME -X gitlab.sistematis.com.ar/OC/be/common/microservice.Version=$GIT_TAG -X gitlab.sistematis.com.ar/OC/be/common/microservice.Build=$BUILD" -o $NAME main.go
+    RET=$?
+fi
+
+if [ $RET -ne 0 ]; then
+    exit 1
+fi
+
+if [ -n "$1" -a "$1" = "watch" ] ; then
+    ./$NAME &
+    PID=$!
+
+    echo "NEW PROCESS $PID"
+    while inotifywait -e modify main.go src/* ; do
+        while kill -s SIGINT $PID; do
+            echo "KILLING $PID"
+            sleep 1
+        done
+        go build -v -ldflags "-X gitlab.sistematis.com.ar/OC/be/common/microservice.Name=$NAME -X gitlab.sistematis.com.ar/OC/be/common/microservice.Version=$GIT_TAG -X gitlab.sistematis.com.ar/OC/be/common/microservice.Build=$BUILD $PROD" -o $NAME main.go
+        RET=$?
+        if [ $RET -eq 0 ]; then
+            ./$NAME &
+            PID=$!
+        fi
+    done
+    exit 0
+fi
+
+if [ -n "$1" -a "$1" = "run" ] ; then
+    ./$NAME
+fi
